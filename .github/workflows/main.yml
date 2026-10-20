@@ -1,0 +1,424 @@
+name: Auto Build BookFaceTurner APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 프로젝트 폴더 및 구글 AI 모델 자동 다운로드
+        run: |
+          mkdir -p app/src/main/java/com/example/bookfaceturner
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/assets
+          curl -L -o app/src/main/assets/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+
+      - name: 2. Gradle 및 설정 파일 자동 생성
+        run: |
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "BookFaceTurner"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.bookfaceturner"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.bookfaceturner"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("com.google.android.material:material:1.11.0")
+              implementation("androidx.lifecycle:lifecycle-service:2.7.0")
+
+              val cameraxVersion = "1.3.2"
+              implementation("androidx.camera:camera-core:$cameraxVersion")
+              implementation("androidx.camera:camera-camera2:$cameraxVersion")
+              implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+
+              implementation("com.google.mediapipe:tasks-vision:0.10.14")
+          }
+          EOF
+
+      - name: 3. 접근성 설정 및 매니페스트 자동 생성
+        run: |
+          cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="false"
+              android:notificationTimeout="100" />
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-feature android:name="android.hardware.camera.front" android:required="true" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="밀리·크레마 표정넘김"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".FacePageTurnerService"
+                      android:exported="true"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+      - name: 4. 앱 소스 코드 자동 생성
+        run: |
+          cat << 'EOF' > app/src/main/java/com/example/bookfaceturner/MainActivity.kt
+          package com.example.bookfaceturner
+
+          import android.Manifest
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+
+          class MainActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val layout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(60, 60, 60, 60)
+                  }
+
+                  val infoText = TextView(this).apply {
+                      textSize = 18f
+                      text = "1. 먼저 [카메라 권한 허용]을 눌러주세요.\n" +
+                             "2. [접근성 설정 열기]를 눌러 '설치된 앱'에서 '밀리·크레마 표정넘김'을 켜주세요.\n\n" +
+                             "이후 밀리의 서재나 크레마를 켜면 자동으로 작동합니다.\n" +
+                             "• 입 살짝 벌리기 = 다음 페이지 (오른쪽 끝 터치)\n" +
+                             "• 눈썹 올리기 = 이전 페이지 (왼쪽 끝 터치)"
+                  }
+
+                  val camBtn = Button(this).apply {
+                      text = "1. 카메라 권한 허용하기"
+                      setOnClickListener {
+                          ActivityCompat.requestPermissions(
+                              this@MainActivity,
+                              arrayOf(Manifest.permission.CAMERA), 100
+                          )
+                      }
+                  }
+
+                  val accBtn = Button(this).apply {
+                      text = "2. 접근성 설정 열기"
+                      setOnClickListener {
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                      }
+                  }
+
+                  layout.addView(infoText)
+                  layout.addView(camBtn)
+                  layout.addView(accBtn)
+                  setContentView(layout)
+
+                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                      != PackageManager.PERMISSION_GRANTED) {
+                      ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 100)
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/bookfaceturner/FacePageTurnerService.kt
+          package com.example.bookfaceturner
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
+          import android.os.SystemClock
+          import android.util.Log
+          import android.view.accessibility.AccessibilityEvent
+          import androidx.camera.core.CameraSelector
+          import androidx.camera.core.ImageAnalysis
+          import androidx.camera.core.ImageProxy
+          import androidx.camera.lifecycle.ProcessCameraProvider
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.Lifecycle
+          import androidx.lifecycle.LifecycleOwner
+          import androidx.lifecycle.LifecycleRegistry
+          import com.google.mediapipe.framework.image.BitmapImageBuilder
+          import com.google.mediapipe.tasks.core.BaseOptions
+          import com.google.mediapipe.tasks.vision.core.RunningMode
+          import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
+          import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
+          import java.util.concurrent.ExecutorService
+          import java.util.concurrent.Executors
+
+          class FacePageTurnerService : AccessibilityService(), LifecycleOwner {
+
+              private lateinit var lifecycleRegistry: LifecycleRegistry
+              private lateinit var cameraExecutor: ExecutorService
+              private var cameraProvider: ProcessCameraProvider? = null
+              private var faceLandmarker: FaceLandmarker? = null
+              private var isCameraRunning = false
+              private var lastClickTime = 0L
+
+              private val COOLDOWN_MS = 1500L
+              private val MOUTH_OPEN_THRESHOLD = 0.20f
+              private val EYEBROW_UP_THRESHOLD = 0.32f
+
+              private val TARGET_BOOK_APPS = setOf(
+                  "kr.co.millie.millieshelf",
+                  "com.yes24.ebook.fourth",
+                  "kr.co.kpc.crema",
+                  "kr.co.aladin.ebook",
+                  "com.bnk.crema.grand"
+              )
+
+              override val lifecycle: Lifecycle
+                  get() = lifecycleRegistry
+
+              override fun onCreate() {
+                  super.onCreate()
+                  lifecycleRegistry = LifecycleRegistry(this)
+                  lifecycleRegistry.currentState = Lifecycle.State.CREATED
+                  cameraExecutor = Executors.newSingleThreadExecutor()
+                  setupFaceLandmarker()
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  lifecycleRegistry.currentState = Lifecycle.State.STARTED
+              }
+
+              private fun setupFaceLandmarker() {
+                  val baseOptions = BaseOptions.builder()
+                      .setModelAssetPath("face_landmarker.task")
+                      .build()
+
+                  val options = FaceLandmarker.FaceLandmarkerOptions.builder()
+                      .setBaseOptions(baseOptions)
+                      .setOutputFaceBlendshapes(true)
+                      .setNumFaces(1)
+                      .setRunningMode(RunningMode.LIVE_STREAM)
+                      .setResultListener { result, _ -> processFaceResult(result) }
+                      .build()
+
+                  faceLandmarker = FaceLandmarker.createFromOptions(this, options)
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                      val pkgName = event.packageName?.toString() ?: return
+                      if (pkgName == "com.android.systemui" || pkgName.contains("inputmethod")) return
+
+                      val isBookApp = TARGET_BOOK_APPS.contains(pkgName) ||
+                                      pkgName.contains("millie") ||
+                                      pkgName.contains("crema") ||
+                                      pkgName.contains("yes24.ebook") ||
+                                      pkgName.contains("aladin.ebook")
+
+                      if (isBookApp) {
+                          startCameraIfNeeded()
+                      } else {
+                          stopCameraIfNeeded()
+                      }
+                  }
+              }
+
+              private fun startCameraIfNeeded() {
+                  if (isCameraRunning) return
+                  isCameraRunning = true
+                  lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+
+                  val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+                  cameraProviderFuture.addListener({
+                      cameraProvider = cameraProviderFuture.get()
+                      val imageAnalysis = ImageAnalysis.Builder()
+                          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                          .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                          .build()
+
+                      imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                          analyzeFace(imageProxy)
+                      }
+
+                      try {
+                          cameraProvider?.unbindAll()
+                          cameraProvider?.bindToLifecycle(
+                              this,
+                              CameraSelector.DEFAULT_FRONT_CAMERA,
+                              imageAnalysis
+                          )
+                      } catch (e: Exception) {
+                          Log.e("BookTurner", "Camera bind failed", e)
+                      }
+                  }, ContextCompat.getMainExecutor(this))
+              }
+
+              private fun stopCameraIfNeeded() {
+                  if (!isCameraRunning) return
+                  isCameraRunning = false
+                  ContextCompat.getMainExecutor(this).execute {
+                      cameraProvider?.unbindAll()
+                  }
+              }
+
+              private fun analyzeFace(imageProxy: ImageProxy) {
+                  val bitmap = imageProxy.toBitmap()
+                  val mpImage = BitmapImageBuilder(bitmap).build()
+                  faceLandmarker?.detectAsync(mpImage, SystemClock.uptimeMillis())
+                  imageProxy.close()
+              }
+
+              private fun processFaceResult(result: FaceLandmarkerResult) {
+                  val now = SystemClock.uptimeMillis()
+                  if (now - lastClickTime < COOLDOWN_MS) return
+
+                  val blendshapes = result.faceBlendshapes()
+                  if (!blendshapes.isPresent || blendshapes.get().isEmpty()) return
+
+                  val categories = blendshapes.get()[0]
+                  var jawOpenScore = 0f
+                  var browInnerUpScore = 0f
+
+                  for (cat in categories) {
+                      when (cat.categoryName()) {
+                          "jawOpen" -> jawOpenScore = cat.score()
+                          "browInnerUp" -> browInnerUpScore = cat.score()
+                      }
+                  }
+
+                  if (jawOpenScore > MOUTH_OPEN_THRESHOLD) {
+                      lastClickTime = now
+                      clickScreenEdge(isRightSide = true)
+                  } else if (browInnerUpScore > EYEBROW_UP_THRESHOLD) {
+                      lastClickTime = now
+                      clickScreenEdge(isRightSide = false)
+                  }
+              }
+
+              private fun clickScreenEdge(isRightSide: Boolean) {
+                  val metrics = resources.displayMetrics
+                  val width = metrics.widthPixels
+                  val height = metrics.heightPixels
+
+                  val targetX = if (isRightSide) width * 0.95f else width * 0.05f
+                  val targetY = height * 0.5f
+
+                  val path = Path().apply { moveTo(targetX, targetY) }
+                  val stroke = GestureDescription.StrokeDescription(path, 0, 50)
+                  val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+                  dispatchGesture(gesture, null, null)
+              }
+
+              override fun onInterrupt() {
+                  stopCameraIfNeeded()
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  stopCameraIfNeeded()
+                  cameraExecutor.shutdown()
+                  faceLandmarker?.close()
+              }
+          }
+          EOF
+
+      - name: 5. Java 17 및 Gradle 준비
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: 6. Gradle 설치
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
+
+      - name: 7. APK 파일 빌드
+        run: gradle assembleDebug
+
+      - name: 8. 완성된 APK 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: BookFaceTurner-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
